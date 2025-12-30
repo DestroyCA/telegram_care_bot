@@ -1,18 +1,6 @@
-# Python
+venv/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-env/
-venv/
 .env
-
-# Логи
-bot.log
-
-# Личные данные
-user_data.json
-
-# Системные файлы
-.DS_Store
-Thumbs.db
