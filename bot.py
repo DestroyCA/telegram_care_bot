@@ -164,15 +164,21 @@ async def remind_time_received(message: types.Message, state: FSMContext):
 
 @dp.callback_query(AddTaskStates.waiting_for_advance_reminder, F.data.startswith("advance:"))
 async def advance_reminder_selected(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()  # Сразу снимаем загрузку
-
-    advance_min = int(callback.data.split(":")[1])
-    chat_id = str(callback.message.chat.id)
+    await callback.answer()  # Снимаем кружок загрузки сразу
 
     try:
+        advance_min = int(callback.data.split(":")[1])
+        chat_id = str(callback.message.chat.id)
+
         data = await state.get_data()
-        task_text = data["task_text"]
-        remind_time = data["remind_time"] if data["remind_time"].lower() != "без времени" else None
+        task_text = data.get("task_text")
+        remind_time = data.get("remind_time")
+        if remind_time and remind_time.lower() == "без времени":
+            remind_time = None
+
+        if not task_text:
+            await callback.message.edit_text("Ошибка: текст задачи потерялся. Начни добавление заново ➕")
+            return
 
         if chat_id not in user_data:
             user_data[chat_id] = {"tasks": [], "water_count": 0, "last_greeting": None}
@@ -180,27 +186,30 @@ async def advance_reminder_selected(callback: types.CallbackQuery, state: FSMCon
         user_data[chat_id]["tasks"].append({
             "text": task_text,
             "time": remind_time,
-            "advance": advance_min
+            "advance": advance_min if advance_min > 0 else 0
         })
         save_data(user_data)
 
+        advance_text = f"{advance_min} минут" if advance_min > 0 else "без предварительного"
+        time_text = remind_time or "без времени"
+
         await callback.message.edit_text(
-            f"✅ Задача добавлена!\n{task_text}\n"
-            f"Напоминание: {remind_time or 'без времени'}\n"
-            f"Предварительно: {advance_min if advance_min > 0 else 'без'} минут",
+            f"✅ Задача успешно добавлена!\n\n"
+            f"{task_text}\n"
+            f"Время напоминания: {time_text}\n"
+            f"Предварительно: {advance_text}",
             reply_markup=None
         )
-        logger.info(f"Задача добавлена для {chat_id}: {task_text} (предв. {advance_min} мин)")
 
     except Exception as e:
-        logger.error(f"Критическая ошибка при добавлении задачи для {chat_id}: {e}")
+        logger.error(f"Ошибка при финализации задачи от {chat_id}: {e}")
         try:
-            await callback.message.edit_text("😔 Произошла ошибка при добавлении задачи. Попробуй ещё раз.")
+            await callback.message.edit_text("😔 Что-то пошло не так при добавлении задачи. Попробуй добавить заново ➕")
         except:
-            pass  # если сообщение уже удалено или недоступно
+            pass  # если сообщение уже недоступно
 
     finally:
-        await state.clear()  # всегда очищаем состояние
+        await state.clear()
 
 # ======= Задачи =======
 @dp.message(F.text == "Мои задачи 📋")
