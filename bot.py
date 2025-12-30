@@ -1,10 +1,9 @@
 import asyncio
 import json
 import os
-import random
-from datetime import datetime
 import logging
 from logging.handlers import RotatingFileHandler
+from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -14,12 +13,12 @@ from aiogram.types import (
     InlineKeyboardButton,
     ReplyKeyboardMarkup,
     KeyboardButton,
-    CallbackQuery
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 import pytz
 from aiohttp import web
 
@@ -33,16 +32,13 @@ logger.addHandler(file_handler)
 
 # ===================== КОНСТАНТЫ =====================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не найден! Добавь его в переменные окружения Render.")
-
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # например https://telegram-care-bot.onrender.com/webhook
-if not WEBHOOK_URL:
-    raise ValueError("WEBHOOK_URL не найден! Добавь его в переменные окружения Render.")
-
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 PORT = int(os.environ.get("PORT", 8000))
 DATA_FILE = "user_data.json"
 MOSCOW_TZ = pytz.timezone("Europe/Moscow")
+
+if not BOT_TOKEN or not WEBHOOK_URL:
+    raise RuntimeError("Не задан BOT_TOKEN или WEBHOOK_URL!")
 
 ENCOURAGEMENT_PHRASES = [
     "Ты — самое прекрасное, что есть в этом мире! 💖",
@@ -94,35 +90,6 @@ def cancel_keyboard():
         one_time_keyboard=True
     )
 
-def get_advance_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="за 5 минут", callback_data="advance:5"),
-         InlineKeyboardButton(text="за 10 минут", callback_data="advance:10")],
-        [InlineKeyboardButton(text="за 30 минут", callback_data="advance:30"),
-         InlineKeyboardButton(text="за 1 час", callback_data="advance:60")],
-        [InlineKeyboardButton(text="без предварительного", callback_data="advance:0")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="advance:back")]
-    ])
-
-def get_tasks_keyboard(chat_id: str):
-    tasks = user_data.get(chat_id, {}).get("tasks", [])
-    buttons = []
-    for i, task in enumerate(tasks):
-        buttons.append([
-            InlineKeyboardButton(text=f"{task['text']} ({task['time'] or 'без времени'})", callback_data=f"keep:{i}"),
-            InlineKeyboardButton(text="✅ Готово", callback_data=f"done:{i}"),
-            InlineKeyboardButton(text="❌ Удалить", callback_data=f"delete:{i}")
-        ])
-    buttons.append([InlineKeyboardButton(text="Назад", callback_data="menu:back")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def get_water_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Да ✅", callback_data="water:yes")],
-        [InlineKeyboardButton(text="Нет ❌", callback_data="water:no")],
-        [InlineKeyboardButton(text="Главное меню 🏠", callback_data="water:menu")]
-    ])
-
 # ===================== ИНИЦИАЛИЗАЦИЯ =====================
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -143,23 +110,38 @@ async def cmd_start(message: Message, state: FSMContext):
     )
 
 # ===================== WEBHOOK =====================
-async def handle(request):
-    update = await request.json()
-    from aiogram.types import Update
-    update = Update(**update)
-    await dp.update_router.feed_update(update)  # aiogram 3.x способ
-    return web.Response()
+async def handle_webhook(request: web.Request):
+    try:
+        data = await request.json()
+        from aiogram.types import Update
+        update = Update(**data)
+        await dp.feed_update(update)
+    except Exception as e:
+        logger.error(f"Ошибка при обработке update: {e}")
+    return web.Response(text="OK")
 
+# ===================== ПЛАНИРОВЩИК =====================
+async def scheduled_job():
+    logger.info("Задача APScheduler выполнена!")
+
+scheduler.add_job(scheduled_job, IntervalTrigger(seconds=60))
+
+# ===================== СТАРТ И WEBHOOK =====================
 async def on_startup(app: web.Application):
-    # Устанавливаем webhook
     await bot.delete_webhook()
     await bot.set_webhook(WEBHOOK_URL)
+    logger.info(f"Webhook установлен: {WEBHOOK_URL}")
     scheduler.start()
+
+async def on_shutdown(app: web.Application):
+    await bot.delete_webhook()
+    await bot.session.close()
 
 # ===================== ТОЧКА ВХОДА =====================
 app = web.Application()
-app.router.add_post("/webhook", handle)
+app.router.add_post("/webhook", handle_webhook)
 app.on_startup.append(on_startup)
+app.on_cleanup.append(on_shutdown)
 
 if __name__ == "__main__":
-    web.run_app(app, port=PORT)
+    web.run_app(app, host="0.0.0.0", port=PORT)
