@@ -1,13 +1,13 @@
 import asyncio
 import json
 import os
+import random
+from datetime import datetime
 import logging
 from logging.handlers import RotatingFileHandler
-from datetime import datetime
 
-import pytz
 from aiohttp import web
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import (
     Message,
@@ -20,6 +20,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import pytz
 
 # ===================== ЛОГИРОВАНИЕ =====================
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ ENCOURAGEMENT_PHRASES = [
     "Ты — уникальна, и это прекрасно! 🌟"
 ]
 
-# ===================== ДАННЫЕ =====================
+# ===================== ЗАГРУЗКА/СОХРАНЕНИЕ ДАННЫХ =====================
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -135,30 +136,36 @@ async def cmd_start(message: Message, state: FSMContext):
         reply_markup=main_menu
     )
 
-# ===================== WEBHOOK =====================
-PORT = int(os.environ.get("PORT", 8000))
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_URL = f"https://telegram-care-bot.onrender.com{WEBHOOK_PATH}"  # Замени на URL сервиса Render
-
+# ===================== WEBHOOK HANDLER =====================
 async def handle(request):
-    update = types.Update(**await request.json())
-    await dp.process_update(update)
-    return web.Response(text="OK")
+    data = await request.json()
+    from aiogram.types import Update
+    update = Update(**data)
+    await dp.feed_update(update)  # <- важное изменение
+    return web.Response(text="ok")
 
-app = web.Application()
-app.router.add_post(WEBHOOK_PATH, handle)
-
-async def on_startup(app):
-    await bot.set_webhook(WEBHOOK_URL)
+# ===================== ТОЧКА ВХОДА =====================
+async def main():
     scheduler.start()
 
-async def on_shutdown(app):
-    await bot.delete_webhook()
-    await bot.session.close()
+    app = web.Application()
+    app.router.add_post(f"/webhook/{BOT_TOKEN}", handle)
+    
+    # Старт aiohttp-сервера на Render
+    port = int(os.environ.get("PORT", 8000))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    
+    print(f"Webhook server started on port {port}")
+    
+    # polling для локального теста можно оставить, но на Render лучше webhook
+    # await dp.start_polling(bot)
 
-app.on_startup.append(on_startup)
-app.on_shutdown.append(on_shutdown)
+    # чтобы сервер не завершался
+    while True:
+        await asyncio.sleep(3600)
 
-# ===================== ЗАПУСК =====================
 if __name__ == "__main__":
-    web.run_app(app, host="0.0.0.0", port=PORT)
+    asyncio.run(main())
