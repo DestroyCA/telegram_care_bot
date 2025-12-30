@@ -164,25 +164,43 @@ async def remind_time_received(message: types.Message, state: FSMContext):
 
 @dp.callback_query(AddTaskStates.waiting_for_advance_reminder, F.data.startswith("advance:"))
 async def advance_reminder_selected(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
+    await callback.answer()  # Сразу снимаем загрузку
+
+    advance_min = int(callback.data.split(":")[1])
+    chat_id = str(callback.message.chat.id)
+
     try:
         data = await state.get_data()
-        advance_min = int(callback.data.split(":")[1])
-        chat_id = str(callback.message.chat.id)
+        task_text = data["task_text"]
+        remind_time = data["remind_time"] if data["remind_time"].lower() != "без времени" else None
+
         if chat_id not in user_data:
             user_data[chat_id] = {"tasks": [], "water_count": 0, "last_greeting": None}
+
         user_data[chat_id]["tasks"].append({
-            "text": data["task_text"],
-            "time": data["remind_time"] if data["remind_time"].lower() != "без времени" else None,
+            "text": task_text,
+            "time": remind_time,
             "advance": advance_min
         })
         save_data(user_data)
-        await callback.message.edit_text(f"✅ Задача добавлена:\n{data['task_text']}", reply_markup=None)
+
+        await callback.message.edit_text(
+            f"✅ Задача добавлена!\n{task_text}\n"
+            f"Напоминание: {remind_time or 'без времени'}\n"
+            f"Предварительно: {advance_min if advance_min > 0 else 'без'} минут",
+            reply_markup=None
+        )
+        logger.info(f"Задача добавлена для {chat_id}: {task_text} (предв. {advance_min} мин)")
+
     except Exception as e:
-        logger.error(f"Ошибка добавления задачи: {e}")
-        await callback.message.edit_text("Ошибка при добавлении 😔")
+        logger.error(f"Критическая ошибка при добавлении задачи для {chat_id}: {e}")
+        try:
+            await callback.message.edit_text("😔 Произошла ошибка при добавлении задачи. Попробуй ещё раз.")
+        except:
+            pass  # если сообщение уже удалено или недоступно
+
     finally:
-        await state.clear()
+        await state.clear()  # всегда очищаем состояние
 
 # ======= Задачи =======
 @dp.message(F.text == "Мои задачи 📋")
