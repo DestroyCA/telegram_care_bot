@@ -32,7 +32,7 @@ logger.addHandler(console_handler)
 
 # ===================== КОНСТАНТЫ =====================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # Например: https://your-bot.onrender.com/webhook
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://telegram-care-bot.onrender.com/webhook")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "super-secret-token")  # Рекомендуется задать в env
 PORT = int(os.environ.get("PORT", 8000))
 DATA_FILE = "user_data.json"
