@@ -20,11 +20,9 @@ from aiogram.enums import ParseMode
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
 file_handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=5, encoding="utf-8")
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
-
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
@@ -36,9 +34,9 @@ if not BOT_TOKEN:
 
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 if not WEBHOOK_URL:
-    raise ValueError("WEBHOOK_URL не задан! Добавьте в Render → Environment: https://telegram-care-bot.onrender.com/webhook")
+    raise ValueError("WEBHOOK_URL не задан в переменных окружения!")
 
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "super-secret-care-bot-token-2025")
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "supersecretcarebot2025")
 PORT = int(os.environ.get("PORT", 8000))
 
 DATA_FILE = "user_data.json"
@@ -79,17 +77,15 @@ user_data = load_data()
 # ===================== FSM =====================
 class AddTaskStates(StatesGroup):
     waiting_for_task_text = State()
-    waiting_for_remind_time = State()
-    waiting_for_advance_reminder = State()
 
 # ===================== КЛАВИАТУРЫ =====================
 main_menu = types.ReplyKeyboardMarkup(
     keyboard=[
+        [types.KeyboardButton(text="✨ Мне грустно")],  # НАВЕРХУ!
         [types.KeyboardButton(text="Добавить задачу ➕")],
         [types.KeyboardButton(text="Мои задачи 📋")],
         [types.KeyboardButton(text="Очистить задачи 🗑")],
         [types.KeyboardButton(text="Помощь ℹ️")],
-        [types.KeyboardButton(text="✨ Мне грустно")]
     ],
     resize_keyboard=True
 )
@@ -98,27 +94,13 @@ def get_tasks_keyboard(chat_id: str):
     tasks = user_data.get(chat_id, {}).get("tasks", [])
     buttons = []
     for i, task in enumerate(tasks):
-        time_str = task['time'] if task['time'] else 'без времени'
         buttons.append([
-            types.InlineKeyboardButton(text=f"{task['text']} ({time_str})", callback_data=f"keep:{i}"),
+            types.InlineKeyboardButton(text=task["text"], callback_data=f"keep:{i}"),
             types.InlineKeyboardButton(text="✅ Готово", callback_data=f"done:{i}"),
             types.InlineKeyboardButton(text="❌ Удалить", callback_data=f"delete:{i}")
         ])
     buttons.append([types.InlineKeyboardButton(text="Назад в меню", callback_data="menu:back")])
     return types.InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def get_advance_keyboard():
-    return types.InlineKeyboardMarkup(inline_keyboard=[
-        [
-            types.InlineKeyboardButton(text="за 5 минут", callback_data="advance:5"),
-            types.InlineKeyboardButton(text="за 10 минут", callback_data="advance:10")
-        ],
-        [
-            types.InlineKeyboardButton(text="за 30 минут", callback_data="advance:30"),
-            types.InlineKeyboardButton(text="за 1 час", callback_data="advance:60")
-        ],
-        [types.InlineKeyboardButton(text="без предварительного", callback_data="advance:0")]
-    ])
 
 def get_water_keyboard():
     return types.InlineKeyboardMarkup(inline_keyboard=[
@@ -144,7 +126,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
         save_data(user_data)
     await message.answer("Привет, Кись! ☀️💕\nВыбирай в меню ниже:", reply_markup=main_menu)
 
-# ======= Добавление задач =======
+# ======= Добавление задач (упрощённо) =======
 @dp.message(F.text == "Добавить задачу ➕")
 async def add_task(message: types.Message, state: FSMContext):
     await message.answer("Напиши текст задачи:")
@@ -152,69 +134,23 @@ async def add_task(message: types.Message, state: FSMContext):
 
 @dp.message(AddTaskStates.waiting_for_task_text)
 async def task_text_received(message: types.Message, state: FSMContext):
-    await state.update_data(task_text=message.text)
-    await message.answer("На какое время напомнить? (ЧЧ:ММ) или напиши «без времени»")
-    await state.set_state(AddTaskStates.waiting_for_remind_time)
+    chat_id = str(message.chat.id)
+    task_text = message.text.strip()
 
-@dp.message(AddTaskStates.waiting_for_remind_time)
-async def remind_time_received(message: types.Message, state: FSMContext):
-    await state.update_data(remind_time=message.text.strip())
-    await message.answer("За сколько минут напомнить заранее?", reply_markup=get_advance_keyboard())
-    await state.set_state(AddTaskStates.waiting_for_advance_reminder)
+    if chat_id not in user_data:
+        user_data[chat_id] = {"tasks": [], "water_count": 0, "last_greeting": None}
 
-@dp.callback_query(AddTaskStates.waiting_for_advance_reminder, F.data.startswith("advance:"))
-async def advance_reminder_selected(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()  # Снимаем загрузку мгновенно
+    user_data[chat_id]["tasks"].append({"text": task_text})
+    save_data(user_data)
 
-    try:
-        advance_min = int(callback.data.split(":")[1])
-    except:
-        advance_min = 0
-
-    chat_id = str(callback.message.chat.id)
-
-    try:
-        data = await state.get_data()
-        task_text = data.get("task_text", "[Без текста]")
-        remind_time = data.get("remind_time")
-        if remind_time and remind_time.lower() == "без времени":
-            remind_time = None
-
-        if chat_id not in user_data:
-            user_data[chat_id] = {"tasks": [], "water_count": 0, "last_greeting": None}
-
-        user_data[chat_id]["tasks"].append({
-            "text": task_text,
-            "time": remind_time,
-            "advance": advance_min
-        })
-        save_data(user_data)
-
-        # Текст, который точно не вызовет проблем
-        if advance_min > 0:
-            advance_text = f"за {advance_min} минут"
-        else:
-            advance_text = "без предварительного"
-
-        time_text = remind_time if remind_time else "без времени"
-
-        await callback.message.edit_text(
-            f"✅ Задача добавлена!\n\n"
-            f"<b>Текст:</b> {task_text}\n"
-            f"<b>Время напоминания:</b> {time_text}\n"
-            f"<b>Предварительно:</b> {advance_text}",
-            parse_mode="HTML"
-        )
-
-    except Exception as e:
-        logger.error(f"Ошибка добавления задачи {chat_id}: {e}")
-        try:
-            await callback.message.edit_text("😔 Ошибка сохранения. Попробуй добавить задачу заново ➕")
-        except:
-            pass
-
-    finally:
-        await state.clear()
+    await message.answer(
+        f"✅ Задача добавлена!\n\n"
+        f"<b>{task_text}</b>\n"
+        f"Я напомню о ней каждые 2 часа ⏰",
+        parse_mode="HTML",
+        reply_markup=main_menu
+    )
+    await state.clear()
 
 # ======= Задачи =======
 @dp.message(F.text == "Мои задачи 📋")
@@ -263,7 +199,7 @@ async def back_to_main(callback: types.CallbackQuery):
     await callback.answer()
     try:
         await callback.message.edit_text("Главное меню:", reply_markup=None)
-        await callback.message.answer("Выбирай ниже 👇", reply_markup=main_menu)
+        await callback.message.answer("Выбирай 👇", reply_markup=main_menu)
     except Exception as e:
         logger.error(f"Ошибка back_to_main: {e}")
 
@@ -314,7 +250,7 @@ async def water_menu(callback: types.CallbackQuery):
 async def show_help(message: types.Message):
     await message.answer(
         "Я твой заботливый помощник 💕\n\n"
-        "• Добавляй задачи\n"
+        "• Добавляй задачи — я напомню о них каждые 2 часа\n"
         "• Получай напоминания о воде\n"
         "• Пиши «Мне грустно» — поддержу!\n"
         "• Утреннее приветствие каждый день ☀️",
@@ -330,16 +266,28 @@ async def morning_greeting():
         except Exception as e:
             logger.error(f"Ошибка приветствия {chat_id}: {e}")
 
+async def task_reminder():
+    logger.info("Отправка напоминаний о задачах")
+    for chat_id in list(user_data.keys()):
+        try:
+            tasks = user_data.get(chat_id, {}).get("tasks", [])
+            if tasks:
+                task_list = "\n".join([f"• {t['text']}" for t in tasks])
+                await bot.send_message(chat_id, f"Напоминание о задачах! ⏰\n\n{task_list}", reply_markup=main_menu)
+        except Exception as e:
+            logger.error(f"Ошибка напоминания задач {chat_id}: {e}")
+
 async def water_reminder():
     logger.info("Отправка напоминаний о воде")
     for chat_id in list(user_data.keys()):
         try:
             await bot.send_message(chat_id, "Не забудь выпить водички! 💧\nТы уже пила сегодня?", reply_markup=get_water_keyboard())
         except Exception as e:
-            logger.error(f"Ошибка напоминания {chat_id}: {e}")
+            logger.error(f"Ошибка напоминания воды {chat_id}: {e}")
 
 scheduler.add_job(morning_greeting, "cron", hour=8, minute=0, timezone=MOSCOW_TZ)
-scheduler.add_job(water_reminder, "interval", hours=2, next_run_time=datetime.now(MOSCOW_TZ) + timedelta(hours=1))
+scheduler.add_job(task_reminder, "interval", hours=2, next_run_time=datetime.now(MOSCOW_TZ) + timedelta(minutes=1))
+scheduler.add_job(water_reminder, "interval", hours=2, next_run_time=datetime.now(MOSCOW_TZ) + timedelta(minutes=2))
 
 # ===================== WEBHOOK =====================
 async def handle_webhook(request):
