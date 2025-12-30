@@ -1,37 +1,57 @@
-import os
+import asyncio
 import json
-import logging
-import random
+import os
 from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher
+import logging
+from logging.handlers import RotatingFileHandler
+
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import (
-    Message, InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton, Update
+    Message,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    CallbackQuery
 )
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
-import asyncio
+from aiohttp import web
 
 # ===================== ЛОГИРОВАНИЕ =====================
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=5)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 
-# ===================== НАСТРОЙКИ =====================
+# ===================== КОНСТАНТЫ =====================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не найден!")
+    raise ValueError("BOT_TOKEN не найден! Добавь его в переменные окружения Render.")
 
-PORT = int(os.environ.get("PORT", 10000))
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_URL = f"https://telegram-care-bot.onrender.com{WEBHOOK_PATH}"
-
+WEBHOOK_URL = "https://telegram-care-bot.onrender.com/webhook"  # <- твой URL Render
 DATA_FILE = "user_data.json"
 MOSCOW_TZ = pytz.timezone("Europe/Moscow")
 
-# ===================== ДАННЫЕ =====================
+# ===================== ФРАЗЫ ПОДДЕРЖКИ =====================
+ENCOURAGEMENT_PHRASES = [
+    "Ты — самое прекрасное, что есть в этом мире! 💖",
+    "Сегодня будет отличный день, я верю в тебя! ☀️",
+    "Ты сильнее, чем думаешь. Всё получится! 💪",
+    "Твоя улыбка делает мир ярче! 😊",
+    "Даже в пасмурный день ты — как лучик солнца! 🌤→☀️",
+    "Ты заслуживаешь счастья и любви! ❤️",
+    "Каждый день — новый шанс стать счастливее. Сегодня твой день! ✨",
+    "Ты — уникальна, и это прекрасно! 🌟"
+]
+
+# ===================== ЗАГРУЗКА/СОХРАНЕНИЕ ДАННЫХ =====================
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -44,6 +64,11 @@ def save_data():
 
 user_data = load_data()
 
+# ===================== FSM =====================
+class AddTaskStates(StatesGroup):
+    waiting_for_task_text = State()
+    waiting_for_remind_time = State()
+
 # ===================== КЛАВИАТУРЫ =====================
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
@@ -55,6 +80,29 @@ main_menu = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True
 )
+
+cancel_keyboard = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="⬅️ Передумала / Назад")],
+              [KeyboardButton(text="Главное меню 🏠")]],
+    resize_keyboard=True,
+    one_time_keyboard=True
+)
+
+def get_time_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton("5 мин", callback_data="time:5"),
+                InlineKeyboardButton("10 мин", callback_data="time:10"),
+                InlineKeyboardButton("15 мин", callback_data="time:15")
+            ],
+            [
+                InlineKeyboardButton("30 мин", callback_data="time:30"),
+                InlineKeyboardButton("1 час", callback_data="time:60"),
+                InlineKeyboardButton("Без времени", callback_data="time:0")
+            ]
+        ]
+    )
 
 def get_tasks_keyboard(chat_id: str):
     tasks = user_data.get(chat_id, {}).get("tasks", [])
@@ -72,22 +120,11 @@ def get_tasks_keyboard(chat_id: str):
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler(timezone=MOSCOW_TZ)
-
-# ===================== ФРАЗЫ ПОДДЕРЖКИ =====================
-ENCOURAGEMENT_PHRASES = [
-    "Ты — самое прекрасное, что есть в этом мире! 💖",
-    "Сегодня будет отличный день, я верю в тебя! ☀️",
-    "Ты сильнее, чем думаешь. Всё получится! 💪",
-    "Твоя улыбка делает мир ярче! 😊",
-    "Даже в пасмурный день ты — как лучик солнца! 🌤→☀️",
-    "Ты заслуживаешь счастья и любви! ❤️",
-    "Каждый день — новый шанс стать счастливее. Сегодня твой день! ✨",
-    "Ты — уникальна, и это прекрасно! 🌟"
-]
+scheduler.start()
 
 # ===================== ХЕНДЛЕРЫ =====================
 @dp.message(Command("start"))
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, state: FSMContext):
     chat_id = str(message.chat.id)
     if chat_id not in user_data:
         user_data[chat_id] = {"tasks": [], "water_count": 0, "last_greeting": None}
@@ -99,62 +136,55 @@ async def cmd_start(message: Message):
         reply_markup=main_menu
     )
 
-@dp.message()
-async def handle_messages(message: Message):
-    chat_id = str(message.chat.id)
-    text = message.text
+@dp.message(F.text == "Добавить задачу ➕")
+async def start_add_task(message: Message, state: FSMContext):
+    await message.answer("Напиши текст задачи:", reply_markup=cancel_keyboard)
+    await state.set_state(AddTaskStates.waiting_for_task_text)
 
-    if text == "✨ Мне грустно":
-        phrase = random.choice(ENCOURAGEMENT_PHRASES)
-        await message.answer(phrase)
+@dp.message(AddTaskStates.waiting_for_task_text)
+async def add_task_text(message: Message, state: FSMContext):
+    await state.update_data(task_text=message.text)
+    await message.answer("Выбери, через сколько минут напомнить о задаче:", reply_markup=get_time_keyboard())
+    await state.set_state(AddTaskStates.waiting_for_remind_time)
 
-    elif text == "Добавить задачу ➕":
-        await message.answer("Напиши текст задачи:")
-
-    elif text == "Мои задачи 📋":
-        await message.answer("Твои задачи:", reply_markup=get_tasks_keyboard(chat_id))
-
-    elif text == "Очистить задачи 🗑":
-        user_data[chat_id]["tasks"] = []
-        save_data()
-        await message.answer("Все задачи удалены ✅")
-
-    elif text == "Помощь ℹ️":
-        await message.answer(
-            "Я могу:\n"
-            "- Подбадривать тебя, когда грустно ✨\n"
-            "- Вести твои задачи 📋\n"
-            "- Напоминать о воде 💧\n"
-            "- И просто радовать тебя ❤️"
+@dp.callback_query(F.data.startswith("time:"))
+async def choose_time(call: CallbackQuery, state: FSMContext):
+    chat_id = str(call.message.chat.id)
+    data = await state.get_data()
+    task_text = data.get("task_text")
+    
+    minutes = int(call.data.split(":")[1])
+    remind_time = None
+    if minutes > 0:
+        remind_time = datetime.now(MOSCOW_TZ) + timedelta(minutes=minutes)
+        scheduler.add_job(
+            lambda: asyncio.create_task(
+                bot.send_message(chat_id, f"Напоминание о задаче: {task_text} ⏰")
+            ),
+            "date",
+            run_date=remind_time
         )
-    else:
-        await message.answer("Я не понимаю эту команду. Выбери из меню ⬇️", reply_markup=main_menu)
-
-# ===================== APScheduler для напоминаний =====================
-def schedule_task_reminder(chat_id: str, task_text: str, remind_time: datetime):
-    async def send_reminder():
-        await bot.send_message(chat_id, f"Напоминание о задаче: {task_text} ⏰")
-    scheduler.add_job(send_reminder, 'date', run_date=remind_time)
+    
+    user_data[chat_id]["tasks"].append({
+        "text": task_text,
+        "time": remind_time.isoformat() if remind_time else None
+    })
+    save_data()
+    await call.message.edit_text(f"Задача '{task_text}' добавлена ✅", reply_markup=main_menu)
+    await state.clear()
 
 # ===================== WEBHOOK =====================
-async def handle(request: web.Request):
-    data = await request.json()
-    update = Update(**data)
-    await dp.update_handler(update)
-    return web.Response()
-
-async def on_startup(app):
-    await bot.set_webhook(WEBHOOK_URL)
-    logger.info(f"Webhook установлен на {WEBHOOK_URL}")
-    scheduler.start()
-
-async def on_cleanup(app):
-    await bot.delete_webhook()
+async def handle(request):
+    json_data = await request.json()
+    update = F.update_from_dict(json_data)
+    await dp.update_router.feed_update(update)
+    return web.Response(text="ok")
 
 app = web.Application()
-app.router.add_post(WEBHOOK_PATH, handle)
-app.on_startup.append(on_startup)
-app.on_cleanup.append(on_cleanup)
+app.router.add_post("/webhook", handle)
 
+# ===================== ЗАПУСК =====================
 if __name__ == "__main__":
-    web.run_app(app, port=PORT)
+    # Устанавливаем webhook при старте
+    asyncio.run(bot.set_webhook(WEBHOOK_URL))
+    web.run_app(app, port=int(os.environ.get("PORT", 10000)))
