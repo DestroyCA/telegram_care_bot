@@ -5,7 +5,6 @@ import random
 from datetime import datetime, timedelta
 import logging
 from logging.handlers import RotatingFileHandler
-
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -14,27 +13,38 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
 from aiohttp import web
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 
 # ===================== ЛОГИРОВАНИЕ =====================
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# Лог в файл
 file_handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=5, encoding="utf-8")
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
-# Лог в консоль (полезно для Render)
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
 # ===================== КОНСТАНТЫ =====================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://telegram-care-bot.onrender.com/webhook")
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "super-secret-token")  # Рекомендуется задать в env
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN не задан в переменных окружения!")
+
+# Автоматический WEBHOOK_URL для Render
+if os.environ.get("RENDER"):
+    WEBHOOK_URL = f"https://{os.environ['RENDER_SERVICE_ID']}.{os.environ['RENDER_REGION']}.onrender.com/webhook"
+else:
+    WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+    if not WEBHOOK_URL:
+        raise ValueError("WEBHOOK_URL не задан в переменных окружения (нужен для локального запуска)!")
+
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "super-secret-care-bot-token-2025")
 PORT = int(os.environ.get("PORT", 8000))
+
 DATA_FILE = "user_data.json"
 MOSCOW_TZ = pytz.timezone("Europe/Moscow")
 
@@ -122,9 +132,6 @@ def get_water_keyboard():
     ])
 
 # ===================== ИНИЦИАЛИЗАЦИЯ =====================
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-
 bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -161,23 +168,27 @@ async def remind_time_received(message: types.Message, state: FSMContext):
 
 @dp.callback_query(AddTaskStates.waiting_for_advance_reminder, F.data.startswith("advance:"))
 async def advance_reminder_selected(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    advance_min = int(callback.data.split(":")[1])
-    chat_id = str(callback.message.chat.id)
-
-    if chat_id not in user_data:
-        user_data[chat_id] = {"tasks": [], "water_count": 0, "last_greeting": None}
-
-    user_data[chat_id]["tasks"].append({
-        "text": data["task_text"],
-        "time": data["remind_time"] if data["remind_time"].lower() != "без времени" else None,
-        "advance": advance_min
-    })
-    save_data(user_data)
-
-    await callback.message.edit_text(f"✅ Задача добавлена:\n{data['task_text']}", reply_markup=None)
     await callback.answer()
-    await state.clear()
+    try:
+        data = await state.get_data()
+        advance_min = int(callback.data.split(":")[1])
+        chat_id = str(callback.message.chat.id)
+
+        if chat_id not in user_data:
+            user_data[chat_id] = {"tasks": [], "water_count": 0, "last_greeting": None}
+
+        user_data[chat_id]["tasks"].append({
+            "text": data["task_text"],
+            "time": data["remind_time"] if data["remind_time"].lower() != "без времени" else None,
+            "advance": advance_min
+        })
+        save_data(user_data)
+        await callback.message.edit_text(f"✅ Задача добавлена:\n{data['task_text']}", reply_markup=None)
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении задачи: {e}")
+        await callback.message.edit_text("Ошибка при добавлении задачи 😔")
+    finally:
+        await state.clear()
 
 # ======= Просмотр и управление задачами =======
 @dp.message(F.text == "Мои задачи 📋")
@@ -191,37 +202,44 @@ async def show_tasks(message: types.Message):
 
 @dp.callback_query(F.data.startswith("done:"))
 async def task_done(callback: types.CallbackQuery):
-    chat_id = str(callback.message.chat.id)
-    idx = int(callback.data.split(":")[1])
-    if chat_id in user_data and idx < len(user_data[chat_id]["tasks"]):
-        task = user_data[chat_id]["tasks"].pop(idx)
-        save_data(user_data)
-        await callback.message.edit_text(f"✅ Выполнено!\n{task['text']}")
     await callback.answer()
+    try:
+        chat_id = str(callback.message.chat.id)
+        idx = int(callback.data.split(":")[1])
+        if chat_id in user_data and 0 <= idx < len(user_data[chat_id]["tasks"]):
+            task = user_data[chat_id]["tasks"].pop(idx)
+            save_data(user_data)
+            await callback.message.edit_text(f"✅ Выполнено!\n{task['text']}")
+        else:
+            await callback.message.edit_text("Задача уже выполнена или удалена ✨")
+    except Exception as e:
+        logger.error(f"Ошибка в task_done: {e}")
+        await callback.message.edit_text("Произошла ошибка 😔")
 
 @dp.callback_query(F.data.startswith("delete:"))
 async def task_delete(callback: types.CallbackQuery):
-    chat_id = str(callback.message.chat.id)
-    idx = int(callback.data.split(":")[1])
-    if chat_id in user_data and idx < len(user_data[chat_id]["tasks"]):
-        task = user_data[chat_id]["tasks"].pop(idx)
-        save_data(user_data)
-        await callback.message.edit_text(f"❌ Удалено:\n{task['text']}")
     await callback.answer()
+    try:
+        chat_id = str(callback.message.chat.id)
+        idx = int(callback.data.split(":")[1])
+        if chat_id in user_data and 0 <= idx < len(user_data[chat_id]["tasks"]):
+            task = user_data[chat_id]["tasks"].pop(idx)
+            save_data(user_data)
+            await callback.message.edit_text(f"❌ Удалено:\n{task['text']}")
+        else:
+            await callback.message.edit_text("Задача уже удалена ✨")
+    except Exception as e:
+        logger.error(f"Ошибка в task_delete: {e}")
+        await callback.message.edit_text("Произошла ошибка 😔")
 
 @dp.callback_query(F.data == "menu:back")
 async def back_to_main(callback: types.CallbackQuery):
-    await callback.message.edit_text("Главное меню:", reply_markup=None)
-    await callback.message.answer("Выбирай ниже 👇", reply_markup=main_menu)
     await callback.answer()
-
-@dp.message(F.text == "Очистить задачи 🗑")
-async def clear_tasks(message: types.Message):
-    chat_id = str(message.chat.id)
-    if chat_id in user_data:
-        user_data[chat_id]["tasks"] = []
-        save_data(user_data)
-    await message.answer("Все задачи очищены! 🗑✨", reply_markup=main_menu)
+    try:
+        await callback.message.edit_text("Главное меню:", reply_markup=None)
+        await callback.message.answer("Выбирай ниже 👇", reply_markup=main_menu)
+    except Exception as e:
+        logger.error(f"Ошибка в back_to_main: {e}")
 
 # ======= Поддержка и вода =======
 @dp.message(F.text == "✨ Мне грустно")
@@ -230,24 +248,41 @@ async def send_encouragement(message: types.Message):
 
 @dp.callback_query(F.data == "water:yes")
 async def water_yes(callback: types.CallbackQuery):
-    chat_id = str(callback.message.chat.id)
-    if chat_id not in user_data:
-        user_data[chat_id] = {"tasks": [], "water_count": 0, "last_greeting": None}
-    user_data[chat_id]["water_count"] += 1
-    save_data(user_data)
-    await callback.message.edit_text("Молодец! Ты выпила воду 💧❤️")
     await callback.answer()
+    try:
+        chat_id = str(callback.message.chat.id)
+        if chat_id not in user_data:
+            user_data[chat_id] = {"tasks": [], "water_count": 0, "last_greeting": None}
+        user_data[chat_id]["water_count"] += 1
+        save_data(user_data)
+        await callback.message.edit_text("Молодец! Ты выпила воду 💧❤️")
+    except Exception as e:
+        logger.error(f"Ошибка в water_yes: {e}")
 
 @dp.callback_query(F.data == "water:no")
 async def water_no(callback: types.CallbackQuery):
-    await callback.message.edit_text("Попробуй сейчас выпить стаканчик воды — станет легче 💧")
     await callback.answer()
+    try:
+        await callback.message.edit_text("Попробуй сейчас выпить стаканчик воды — станет легче 💧")
+    except Exception as e:
+        logger.error(f"Ошибка в water_no: {e}")
 
 @dp.callback_query(F.data == "water:menu")
 async def water_menu(callback: types.CallbackQuery):
-    await callback.message.edit_text("Главное меню:", reply_markup=None)
-    await callback.message.answer("Выбирай 👇", reply_markup=main_menu)
     await callback.answer()
+    try:
+        await callback.message.edit_text("Главное меню:", reply_markup=None)
+        await callback.message.answer("Выбирай 👇", reply_markup=main_menu)
+    except Exception as e:
+        logger.error(f"Ошибка в water_menu: {e}")
+
+@dp.message(F.text == "Очистить задачи 🗑")
+async def clear_tasks(message: types.Message):
+    chat_id = str(message.chat.id)
+    if chat_id in user_data:
+        user_data[chat_id]["tasks"] = []
+        save_data(user_data)
+    await message.answer("Все задачи очищены! 🗑✨", reply_markup=main_menu)
 
 @dp.message(F.text == "Помощь ℹ️")
 async def show_help(message: types.Message):
@@ -277,15 +312,13 @@ async def water_reminder():
         except Exception as e:
             logger.error(f"Ошибка напоминания о воде {chat_id}: {e}")
 
-# Добавляем задачи планировщика ДО запуска сервера
 scheduler.add_job(morning_greeting, "cron", hour=8, minute=0, timezone=MOSCOW_TZ)
-scheduler.add_job(water_reminder, "interval", hours=2, start_date=datetime.now(MOSCOW_TZ).replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
+scheduler.add_job(water_reminder, "interval", hours=2, next_run_time=datetime.now(MOSCOW_TZ) + timedelta(hours=1))
 
 # ===================== WEBHOOK =====================
 async def handle_webhook(request):
     if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
         return web.Response(status=403)
-
     try:
         data = await request.json()
         update = types.Update.model_validate(data, context={"bot": bot})
@@ -311,9 +344,8 @@ async def on_shutdown(app: web.Application):
 
 # ===================== ЗАПУСК =====================
 app = web.Application()
-app.router.add_get("/", health_check)           # Для пинга от UptimeRobot
+app.router.add_get("/", health_check)
 app.router.add_post("/webhook", handle_webhook)
-
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
