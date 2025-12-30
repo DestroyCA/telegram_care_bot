@@ -2,7 +2,7 @@ import os
 import json
 import logging
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import (
@@ -11,7 +11,9 @@ from aiogram.types import (
 )
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
+import asyncio
 
 # ===================== ЛОГИРОВАНИЕ =====================
 logging.basicConfig(level=logging.INFO)
@@ -69,6 +71,7 @@ def get_tasks_keyboard(chat_id: str):
 # ===================== ИНИЦИАЛИЗАЦИЯ =====================
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+scheduler = AsyncIOScheduler(timezone=MOSCOW_TZ)
 
 # ===================== ФРАЗЫ ПОДДЕРЖКИ =====================
 ENCOURAGEMENT_PHRASES = [
@@ -127,6 +130,12 @@ async def handle_messages(message: Message):
     else:
         await message.answer("Я не понимаю эту команду. Выбери из меню ⬇️", reply_markup=main_menu)
 
+# ===================== APScheduler для напоминаний =====================
+def schedule_task_reminder(chat_id: str, task_text: str, remind_time: datetime):
+    async def send_reminder():
+        await bot.send_message(chat_id, f"Напоминание о задаче: {task_text} ⏰")
+    scheduler.add_job(send_reminder, 'date', run_date=remind_time)
+
 # ===================== WEBHOOK =====================
 async def handle(request: web.Request):
     data = await request.json()
@@ -137,6 +146,7 @@ async def handle(request: web.Request):
 async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
     logger.info(f"Webhook установлен на {WEBHOOK_URL}")
+    scheduler.start()
 
 async def on_cleanup(app):
     await bot.delete_webhook()
