@@ -34,13 +34,9 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не задан в переменных окружения!")
 
-# Автоматический WEBHOOK_URL для Render
-if os.environ.get("RENDER"):
-    WEBHOOK_URL = f"https://{os.environ['RENDER_SERVICE_ID']}.{os.environ['RENDER_REGION']}.onrender.com/webhook"
-else:
-    WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
-    if not WEBHOOK_URL:
-        raise ValueError("WEBHOOK_URL не задан в переменных окружения (нужен для локального запуска)!")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+if not WEBHOOK_URL:
+    raise ValueError("WEBHOOK_URL не задан! Добавьте в Render → Environment: https://telegram-care-bot.onrender.com/webhook")
 
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "super-secret-care-bot-token-2025")
 PORT = int(os.environ.get("PORT", 8000))
@@ -173,10 +169,8 @@ async def advance_reminder_selected(callback: types.CallbackQuery, state: FSMCon
         data = await state.get_data()
         advance_min = int(callback.data.split(":")[1])
         chat_id = str(callback.message.chat.id)
-
         if chat_id not in user_data:
             user_data[chat_id] = {"tasks": [], "water_count": 0, "last_greeting": None}
-
         user_data[chat_id]["tasks"].append({
             "text": data["task_text"],
             "time": data["remind_time"] if data["remind_time"].lower() != "без времени" else None,
@@ -185,12 +179,12 @@ async def advance_reminder_selected(callback: types.CallbackQuery, state: FSMCon
         save_data(user_data)
         await callback.message.edit_text(f"✅ Задача добавлена:\n{data['task_text']}", reply_markup=None)
     except Exception as e:
-        logger.error(f"Ошибка при добавлении задачи: {e}")
-        await callback.message.edit_text("Ошибка при добавлении задачи 😔")
+        logger.error(f"Ошибка добавления задачи: {e}")
+        await callback.message.edit_text("Ошибка при добавлении 😔")
     finally:
         await state.clear()
 
-# ======= Просмотр и управление задачами =======
+# ======= Задачи =======
 @dp.message(F.text == "Мои задачи 📋")
 async def show_tasks(message: types.Message):
     chat_id = str(message.chat.id)
@@ -213,8 +207,8 @@ async def task_done(callback: types.CallbackQuery):
         else:
             await callback.message.edit_text("Задача уже выполнена или удалена ✨")
     except Exception as e:
-        logger.error(f"Ошибка в task_done: {e}")
-        await callback.message.edit_text("Произошла ошибка 😔")
+        logger.error(f"Ошибка task_done: {e}")
+        await callback.message.edit_text("Ошибка 😔")
 
 @dp.callback_query(F.data.startswith("delete:"))
 async def task_delete(callback: types.CallbackQuery):
@@ -229,8 +223,8 @@ async def task_delete(callback: types.CallbackQuery):
         else:
             await callback.message.edit_text("Задача уже удалена ✨")
     except Exception as e:
-        logger.error(f"Ошибка в task_delete: {e}")
-        await callback.message.edit_text("Произошла ошибка 😔")
+        logger.error(f"Ошибка task_delete: {e}")
+        await callback.message.edit_text("Ошибка 😔")
 
 @dp.callback_query(F.data == "menu:back")
 async def back_to_main(callback: types.CallbackQuery):
@@ -239,7 +233,15 @@ async def back_to_main(callback: types.CallbackQuery):
         await callback.message.edit_text("Главное меню:", reply_markup=None)
         await callback.message.answer("Выбирай ниже 👇", reply_markup=main_menu)
     except Exception as e:
-        logger.error(f"Ошибка в back_to_main: {e}")
+        logger.error(f"Ошибка back_to_main: {e}")
+
+@dp.message(F.text == "Очистить задачи 🗑")
+async def clear_tasks(message: types.Message):
+    chat_id = str(message.chat.id)
+    if chat_id in user_data:
+        user_data[chat_id]["tasks"] = []
+        save_data(user_data)
+    await message.answer("Все задачи очищены! 🗑✨", reply_markup=main_menu)
 
 # ======= Поддержка и вода =======
 @dp.message(F.text == "✨ Мне грустно")
@@ -257,7 +259,7 @@ async def water_yes(callback: types.CallbackQuery):
         save_data(user_data)
         await callback.message.edit_text("Молодец! Ты выпила воду 💧❤️")
     except Exception as e:
-        logger.error(f"Ошибка в water_yes: {e}")
+        logger.error(f"Ошибка water_yes: {e}")
 
 @dp.callback_query(F.data == "water:no")
 async def water_no(callback: types.CallbackQuery):
@@ -265,7 +267,7 @@ async def water_no(callback: types.CallbackQuery):
     try:
         await callback.message.edit_text("Попробуй сейчас выпить стаканчик воды — станет легче 💧")
     except Exception as e:
-        logger.error(f"Ошибка в water_no: {e}")
+        logger.error(f"Ошибка water_no: {e}")
 
 @dp.callback_query(F.data == "water:menu")
 async def water_menu(callback: types.CallbackQuery):
@@ -274,15 +276,7 @@ async def water_menu(callback: types.CallbackQuery):
         await callback.message.edit_text("Главное меню:", reply_markup=None)
         await callback.message.answer("Выбирай 👇", reply_markup=main_menu)
     except Exception as e:
-        logger.error(f"Ошибка в water_menu: {e}")
-
-@dp.message(F.text == "Очистить задачи 🗑")
-async def clear_tasks(message: types.Message):
-    chat_id = str(message.chat.id)
-    if chat_id in user_data:
-        user_data[chat_id]["tasks"] = []
-        save_data(user_data)
-    await message.answer("Все задачи очищены! 🗑✨", reply_markup=main_menu)
+        logger.error(f"Ошибка water_menu: {e}")
 
 @dp.message(F.text == "Помощь ℹ️")
 async def show_help(message: types.Message):
@@ -302,7 +296,7 @@ async def morning_greeting():
         try:
             await bot.send_message(chat_id, "Доброе утро, Кись! ☀️💕\nНовый день — новые возможности!", reply_markup=main_menu)
         except Exception as e:
-            logger.error(f"Ошибка отправки приветствия {chat_id}: {e}")
+            logger.error(f"Ошибка приветствия {chat_id}: {e}")
 
 async def water_reminder():
     logger.info("Отправка напоминаний о воде")
@@ -310,7 +304,7 @@ async def water_reminder():
         try:
             await bot.send_message(chat_id, "Не забудь выпить водички! 💧\nТы уже пила сегодня?", reply_markup=get_water_keyboard())
         except Exception as e:
-            logger.error(f"Ошибка напоминания о воде {chat_id}: {e}")
+            logger.error(f"Ошибка напоминания {chat_id}: {e}")
 
 scheduler.add_job(morning_greeting, "cron", hour=8, minute=0, timezone=MOSCOW_TZ)
 scheduler.add_job(water_reminder, "interval", hours=2, next_run_time=datetime.now(MOSCOW_TZ) + timedelta(hours=1))
@@ -324,7 +318,7 @@ async def handle_webhook(request):
         update = types.Update.model_validate(data, context={"bot": bot})
         await dp.feed_update(bot=bot, update=update)
     except Exception as e:
-        logger.error(f"Ошибка обработки webhook: {e}")
+        logger.error(f"Ошибка webhook: {e}")
         return web.Response(status=400)
     return web.Response()
 
