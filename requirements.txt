@@ -1,3 +1,4 @@
 aiogram==3.0.0b7
-apscheduler
-pytz
+aiohttp==3.8.5
+apscheduler==3.10.2
+pytz==2025.2
