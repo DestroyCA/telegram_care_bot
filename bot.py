@@ -36,10 +36,11 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не найден! Добавь его в переменные окружения Render.")
 
-PORT = int(os.environ.get("PORT", 8000))  # Render предоставляет порт через переменные окружения
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_URL = f"https://telegram-care-bot.onrender.com{WEBHOOK_PATH}"  # твой URL на Render
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # например https://telegram-care-bot.onrender.com/webhook
+if not WEBHOOK_URL:
+    raise ValueError("WEBHOOK_URL не найден! Добавь его в переменные окружения Render.")
 
+PORT = int(os.environ.get("PORT", 8000))
 DATA_FILE = "user_data.json"
 MOSCOW_TZ = pytz.timezone("Europe/Moscow")
 
@@ -141,37 +142,24 @@ async def cmd_start(message: Message, state: FSMContext):
         reply_markup=main_menu
     )
 
-# ===================== WEBHOOK HANDLER =====================
+# ===================== WEBHOOK =====================
 async def handle(request):
-    try:
-        update = await request.json()
-        await dp.update_manager.feed_update(update)  # aiogram 3.x
-    except Exception as e:
-        logger.exception(e)
+    update = await request.json()
+    from aiogram.types import Update
+    update = Update(**update)
+    await dp.update_router.feed_update(update)  # aiogram 3.x способ
     return web.Response()
 
-# ===================== MAIN =====================
-async def on_startup():
-    # запускаем scheduler внутри async функции
-    scheduler.start()
-    # устанавливаем webhook
-    await bot.delete_webhook(drop_pending_updates=True)
+async def on_startup(app: web.Application):
+    # Устанавливаем webhook
+    await bot.delete_webhook()
     await bot.set_webhook(WEBHOOK_URL)
-    print("Webhook set to:", WEBHOOK_URL)
-    print("Scheduler started!")
+    scheduler.start()
 
-async def main():
-    await on_startup()
-    app = web.Application()
-    app.router.add_post(WEBHOOK_PATH, handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    print(f"Listening on port {PORT}...")
-    # держим процесс живым
-    while True:
-        await asyncio.sleep(3600)
+# ===================== ТОЧКА ВХОДА =====================
+app = web.Application()
+app.router.add_post("/webhook", handle)
+app.on_startup.append(on_startup)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    web.run_app(app, port=PORT)
