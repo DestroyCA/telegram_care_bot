@@ -1,26 +1,25 @@
 import asyncio
 import json
 import os
-import random
-from datetime import datetime
 import logging
 from logging.handlers import RotatingFileHandler
+from datetime import datetime
 
-from aiogram import Bot, Dispatcher, F
+import pytz
+from aiohttp import web
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import (
     Message,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     ReplyKeyboardMarkup,
-    KeyboardButton,
-    CallbackQuery
+    KeyboardButton
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import pytz
 
 # ===================== ЛОГИРОВАНИЕ =====================
 logger = logging.getLogger(__name__)
@@ -31,7 +30,7 @@ file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 # ===================== КОНСТАНТЫ =====================
-BOT_TOKEN = os.environ.get("BOT_TOKEN")  # <- токен из переменной окружения
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не найден! Добавь его в переменные окружения Render.")
 
@@ -49,7 +48,7 @@ ENCOURAGEMENT_PHRASES = [
     "Ты — уникальна, и это прекрасно! 🌟"
 ]
 
-# ===================== ЗАГРУЗКА/СОХРАНЕНИЕ ДАННЫХ =====================
+# ===================== ДАННЫЕ =====================
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -136,10 +135,30 @@ async def cmd_start(message: Message, state: FSMContext):
         reply_markup=main_menu
     )
 
-# ===================== ТОЧКА ВХОДА =====================
-async def main():
-    scheduler.start()
-    await dp.start_polling(bot)
+# ===================== WEBHOOK =====================
+PORT = int(os.environ.get("PORT", 8000))
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = f"https://telegram-care-bot.onrender.com{WEBHOOK_PATH}"  # Замени на URL сервиса Render
 
+async def handle(request):
+    update = types.Update(**await request.json())
+    await dp.process_update(update)
+    return web.Response(text="OK")
+
+app = web.Application()
+app.router.add_post(WEBHOOK_PATH, handle)
+
+async def on_startup(app):
+    await bot.set_webhook(WEBHOOK_URL)
+    scheduler.start()
+
+async def on_shutdown(app):
+    await bot.delete_webhook()
+    await bot.session.close()
+
+app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown)
+
+# ===================== ЗАПУСК =====================
 if __name__ == "__main__":
-    asyncio.run(main())
+    web.run_app(app, host="0.0.0.0", port=PORT)
