@@ -1,14 +1,14 @@
-import asyncio
-import json
 import os
-import random
-from datetime import datetime
+import json
 import logging
 from logging.handlers import RotatingFileHandler
-
+import pytz
 from aiohttp import web
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     Message,
     InlineKeyboardMarkup,
@@ -16,11 +16,8 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
     KeyboardButton
 )
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import pytz
+import asyncio
 
 # ===================== ЛОГИРОВАНИЕ =====================
 logger = logging.getLogger(__name__)
@@ -33,10 +30,13 @@ logger.addHandler(file_handler)
 # ===================== КОНСТАНТЫ =====================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не найден! Добавь его в переменные окружения Render.")
+    raise ValueError("BOT_TOKEN не найден!")
 
 DATA_FILE = "user_data.json"
 MOSCOW_TZ = pytz.timezone("Europe/Moscow")
+PORT = int(os.environ.get("PORT", 8000))
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = f"https://telegram-care-bot.onrender.com{WEBHOOK_PATH}"
 
 ENCOURAGEMENT_PHRASES = [
     "Ты — самое прекрасное, что есть в этом мире! 💖",
@@ -139,33 +139,22 @@ async def cmd_start(message: Message, state: FSMContext):
 # ===================== WEBHOOK HANDLER =====================
 async def handle(request):
     data = await request.json()
-    from aiogram.types import Update
-    update = Update(**data)
-    await dp.feed_update(update)  # <- важное изменение
-    return web.Response(text="ok")
+    update = types.Update(**data)
+    await dp.process_update(update)
+    return web.Response()
 
-# ===================== ТОЧКА ВХОДА =====================
-async def main():
-    scheduler.start()
+# ===================== ЗАПУСК СЕРВЕРА =====================
+app = web.Application()
+app.router.add_post(WEBHOOK_PATH, handle)
 
-    app = web.Application()
-    app.router.add_post(f"/webhook/{BOT_TOKEN}", handle)
-    
-    # Старт aiohttp-сервера на Render
-    port = int(os.environ.get("PORT", 8000))
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    
-    print(f"Webhook server started on port {port}")
-    
-    # polling для локального теста можно оставить, но на Render лучше webhook
-    # await dp.start_polling(bot)
+async def on_startup(_):
+    await bot.set_webhook(WEBHOOK_URL)
 
-    # чтобы сервер не завершался
-    while True:
-        await asyncio.sleep(3600)
+async def on_shutdown(_):
+    await bot.delete_webhook()
+
+app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    web.run_app(app, port=PORT)
